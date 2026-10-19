@@ -64,7 +64,7 @@ IntelliWheels_FullStack/
 │       ├── api.ts                # API client (40+ functions)
 │       ├── config.ts             # Configuration constants
 │       ├── types.ts              # TypeScript interfaces
-│       └── vehicleDatabase.ts    # Make/model reference data
+│       └── publicRoutes.ts       # Shared public route navigation
 ├── backend/                      # Flask Python API
 │   ├── app/
 │   │   ├── __init__.py           # Flask app factory

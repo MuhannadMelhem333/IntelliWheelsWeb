@@ -1,12 +1,16 @@
 'use client';
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { STORAGE_KEYS, CurrencyCode, CURRENCY_RATES, convertCurrency as convertCurrencyUtil, formatCurrency as formatCurrencyUtil, formatPrice as formatPriceUtil } from '@/lib/config';
+import { STORAGE_KEYS, CurrencyCode, CURRENCY_RATES, COOKIE_AUTH_ENABLED, convertCurrency as convertCurrencyUtil, formatPrice as formatPriceUtil } from '@/lib/config';
+import { getCookieSessionVersion, getCookieSessionRevision, setCookieSessionVersion, announceCookieSessionChange, cookieSessionChangeKey } from '@/lib/cookieSession';
 import { getProfile, loginUser, logoutUser, signupUser, updateProfile, verifySession, googleAuth, forgotPassword, resetPassword } from '@/lib/api';
 import { UserProfile } from '@/lib/types';
+import { shouldInvalidateSession, subscribeToSessionRejection } from '@/lib/sessionEvents';
+import { logoutSession } from '@/lib/logoutSession';
 
 interface AuthContextValue {
   user: UserProfile | null;
+  // In cookie mode this is a non-secret session version for legacy UI props.
   token: string | null;
   loading: boolean;
   sessionValidated: boolean;
@@ -28,6 +32,7 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+const errorMessage = (error: unknown, fallback: string) => error instanceof Error ? error.message : fallback;
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
   const [user, setUser] = useState<UserProfile | null>(null);
@@ -68,30 +73,64 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   // Track if we've done the initial localStorage check
   const [initialCheckDone, setInitialCheckDone] = useState(false);
+  const [verificationRevision, setVerificationRevision] = useState(0);
   
   // Use a ref to track "skip validation" - this prevents stale closure issues
   // When we just logged in, we don't need to re-validate the fresh token
   const skipNextValidation = useRef(false);
 
-  useEffect(() => {
-    const storedToken = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.token) : null;
-    const storedUser = typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.user) : null;
+  const clearLocalAuth = useCallback(() => {
+    if (COOKIE_AUTH_ENABLED) setCookieSessionVersion(null);
+    skipNextValidation.current = false;
+    setToken(null);
+    setUser(null);
+    setSessionValidated(false);
+    localStorage.removeItem(STORAGE_KEYS.token);
+    localStorage.removeItem(STORAGE_KEYS.user);
+  }, []);
 
-    console.log('[Auth] Initial load - storedToken:', storedToken ? `${storedToken.substring(0, 10)}... (len=${storedToken.length})` : 'null');
-    console.log('[Auth] Initial load - storedUser:', storedUser ? 'exists' : 'null');
+  useEffect(() => {
+    if (!COOKIE_AUTH_ENABLED) return;
+    const recheck = () => {
+      clearLocalAuth();
+      setLoading(true);
+      setVerificationRevision(value => value + 1);
+    };
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === cookieSessionChangeKey) recheck();
+    };
+    window.addEventListener('focus', recheck);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('focus', recheck);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, [clearLocalAuth]);
+
+  useEffect(() => subscribeToSessionRejection((rejectedToken) => {
+    // Check persisted identity too: login may have stored a replacement token
+    // before React commits its new state and updates this subscription.
+    if (shouldInvalidateSession(token, rejectedToken) &&
+        shouldInvalidateSession(COOKIE_AUTH_ENABLED ? getCookieSessionVersion() : localStorage.getItem(STORAGE_KEYS.token), rejectedToken)) {
+      clearLocalAuth();
+      setLoading(false);
+    }
+  }), [token, clearLocalAuth]);
+
+  useEffect(() => {
+    if (COOKIE_AUTH_ENABLED) {
+      for (const key of [STORAGE_KEYS.token, STORAGE_KEYS.user, 'token', 'authToken']) localStorage.removeItem(key);
+    }
+    const storedToken = !COOKIE_AUTH_ENABLED && typeof window !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.token) : null;
 
     if (storedToken) {
       setToken(storedToken);
-      if (storedUser) {
-        try {
-          setUser(JSON.parse(storedUser));
-        } catch (err) {
-          console.warn('Failed to parse stored user', err);
-        }
-      }
+      // A cached profile is not proof of an active server session. Keep it in
+      // storage until verification succeeds so private UI is never enabled by
+      // a stale profile while the API is unavailable.
     } else {
       // No stored token - we're done loading
-      setLoading(false);
+      if (!COOKIE_AUTH_ENABLED) setLoading(false);
     }
     setInitialCheckDone(true);
   }, []);
@@ -106,78 +145,70 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       skipNextValidation.current = false;
       setSessionValidated(true);
       setLoading(false);
-      console.log('[Auth] Skipped validation - fresh login');
       return;
     }
+    let live = true;
+    const controller = new AbortController();
+    const startedAt = getCookieSessionRevision();
+    const isCurrentRequest = () => live && (COOKIE_AUTH_ENABLED
+      ? startedAt === getCookieSessionRevision()
+      : localStorage.getItem(STORAGE_KEYS.token) === token);
     async function validateSession() {
-      if (!token) {
+      if (!token && !COOKIE_AUTH_ENABLED) {
         // No token after initial check means guest user
-        console.log('[Auth] No token to validate - guest user');
         setSessionValidated(false);
         setLoading(false);
         return;
       }
 
-      // If we have a stored user, trust it immediately and validate in background
-      // This prevents the UI from being blocked during Render/backend cold starts
-      const hasStoredUser = !!user;
-      if (hasStoredUser) {
-        setSessionValidated(true);
-        setLoading(false);
-        console.log('[Auth] Trusting stored user, validating in background...');
-      }
-
-      console.log('[Auth] Validating session for token:', token.substring(0, 10) + '...');
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
       try {
-        // Add 15s timeout — non-blocking since we already trust stored user
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        // A timeout leaves the session unverified and returns the app to guest state.
         const response = await verifySession(token, controller.signal);
-        clearTimeout(timeoutId);
-        console.log('[Auth] Verify response:', response);
-        if (response.success && response.authenticated) {
+        if (!isCurrentRequest()) return;
+        if (response.success && response.authenticated && (!COOKIE_AUTH_ENABLED || response.sessionVersion)) {
           if (response.user) {
             setUser(response.user);
-            localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(response.user));
+            if (!COOKIE_AUTH_ENABLED) localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(response.user));
+          }
+          if (COOKIE_AUTH_ENABLED && response.sessionVersion) {
+            setCookieSessionVersion(response.sessionVersion);
+            skipNextValidation.current = true;
+            setToken(response.sessionVersion);
           }
           setSessionValidated(true);
-          console.log('[Auth] Session validated successfully');
         } else {
           // Token is invalid/expired - silently logout
-          console.log('[Auth] Session invalid - logging out');
           setSessionValidated(false);
-          await handleLogout();
+          clearLocalAuth();
         }
       } catch (err) {
-        if (hasStoredUser) {
-          // We already trusted the stored user; just log the timeout/error
-          console.warn('[Auth] Background validation failed (using stored user):', err);
-        } else {
-          // No stored user and validation failed - silently logout
-          console.error('[Auth] Validation error:', err);
-          setSessionValidated(false);
-          await handleLogout();
-        }
+        if (!isCurrentRequest()) return;
+        console.error('[Auth] Validation error:', err);
+        setSessionValidated(false);
+        clearLocalAuth();
       } finally {
-        setLoading(false);
+        clearTimeout(timeoutId);
+        if (live) setLoading(false);
       }
     }
     validateSession();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, initialCheckDone]);
+    return () => { live = false; controller.abort(); };
+  }, [token, initialCheckDone, clearLocalAuth, verificationRevision]);
 
   const persistAuth = useCallback((authToken: string, profile: UserProfile) => {
-    console.log('[Auth] persistAuth called with token:', authToken.substring(0, 10) + '...');
     // Mark to skip the next validation - we know the token is valid (just received from server)
     skipNextValidation.current = true;
     setSessionValidated(true);
     setToken(authToken);
     setUser(profile);
-    localStorage.setItem(STORAGE_KEYS.token, authToken);
-    localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(profile));
-    console.log('[Auth] Token saved to localStorage. Verifying...');
-    const verifyToken = localStorage.getItem(STORAGE_KEYS.token);
-    console.log('[Auth] Verification - token in localStorage:', verifyToken ? `${verifyToken.substring(0, 10)}... (len=${verifyToken.length})` : 'NULL!');
+    if (COOKIE_AUTH_ENABLED) {
+      setCookieSessionVersion(authToken);
+      announceCookieSessionChange();
+    } else {
+      localStorage.setItem(STORAGE_KEYS.token, authToken);
+      localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(profile));
+    }
   }, []);
 
   const fetchProfileForToken = useCallback(async (authToken: string, fallback?: UserProfile | null) => {
@@ -197,24 +228,22 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     try {
       setLoading(true);
       setError(null);
-      console.log('[Auth] Login attempt for:', username);
       const response = await loginUser(username, password);
-      console.log('[Auth] Login response:', { success: response.success, hasToken: !!response.token, error: response.error });
-      if (response.success && response.token) {
-        console.log('[Auth] Login successful, token received:', response.token.substring(0, 10) + '...');
-        const profile = await fetchProfileForToken(response.token, response.user);
+      const identity = COOKIE_AUTH_ENABLED ? response.sessionVersion : response.token;
+      if (response.success && identity) {
+        const profile = await fetchProfileForToken(identity, response.user);
         if (!profile) {
           setError('Unable to load profile details');
           return false;
         }
-        persistAuth(response.token, profile);
+        persistAuth(identity, profile);
         return true;
       }
       setError(response.error || 'Unable to login');
       return false;
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('[Auth] Login error:', err);
-      setError(err.message || 'Unable to login');
+      setError(errorMessage(err, 'Unable to login'));
       return false;
     } finally {
       setLoading(false);
@@ -226,19 +255,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setLoading(true);
       setError(null);
       const response = await signupUser(username, email, password);
-      if (response.success && response.token) {
-        const profile = await fetchProfileForToken(response.token, response.user);
+      const identity = COOKIE_AUTH_ENABLED ? response.sessionVersion : response.token;
+      if (response.success && identity) {
+        const profile = await fetchProfileForToken(identity, response.user);
         if (!profile) {
           setError('Unable to load profile details');
           return false;
         }
-        persistAuth(response.token, profile);
+        persistAuth(identity, profile);
         return true;
       }
       setError(response.error || 'Unable to sign up');
       return false;
-    } catch (err: any) {
-      setError(err.message || 'Unable to sign up');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'Unable to sign up'));
       return false;
     } finally {
       setLoading(false);
@@ -250,19 +280,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setLoading(true);
       setError(null);
       const response = await googleAuth(credential);
-      if (response.success && response.token) {
-        const profile = await fetchProfileForToken(response.token, response.user);
+      const identity = COOKIE_AUTH_ENABLED ? response.sessionVersion : response.token;
+      if (response.success && identity) {
+        const profile = await fetchProfileForToken(identity, response.user);
         if (!profile) {
           setError('Unable to load profile details');
           return false;
         }
-        persistAuth(response.token, profile);
+        persistAuth(identity, profile);
         return true;
       }
       setError(response.error || 'Google sign-in failed');
       return false;
-    } catch (err: any) {
-      setError(err.message || 'Google sign-in failed');
+    } catch (err: unknown) {
+      setError(errorMessage(err, 'Google sign-in failed'));
       return false;
     } finally {
       setLoading(false);
@@ -275,9 +306,10 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setError(null);
       const response = await forgotPassword(email);
       return { success: response.success, message: response.message };
-    } catch (err: any) {
-      setError(err.message || 'Failed to send reset email');
-      return { success: false, message: err.message || 'Failed to send reset email' };
+    } catch (err: unknown) {
+      const message = errorMessage(err, 'Failed to send reset email');
+      setError(message);
+      return { success: false, message };
     } finally {
       setLoading(false);
     }
@@ -288,40 +320,48 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       setLoading(true);
       setError(null);
       const response = await resetPassword(resetToken, newPassword);
+      if (COOKIE_AUTH_ENABLED && response.success) {
+        clearLocalAuth();
+        announceCookieSessionChange();
+      }
       return { success: response.success, message: response.message };
-    } catch (err: any) {
-      setError(err.message || 'Failed to reset password');
-      return { success: false, message: err.message || 'Failed to reset password' };
+    } catch (err: unknown) {
+      const message = errorMessage(err, 'Failed to reset password');
+      setError(message);
+      return { success: false, message };
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [clearLocalAuth]);
 
   const handleLogout = useCallback(async () => {
-    console.log('[Auth] handleLogout called');
-    try {
-      if (token) {
-        await logoutUser(token);
-      }
-    } catch (err) {
-      console.warn('Logout warning:', err);
-    } finally {
-      setToken(null);
-      setUser(null);
-      setSessionValidated(false);
-      localStorage.removeItem(STORAGE_KEYS.token);
-      localStorage.removeItem(STORAGE_KEYS.user);
-      console.log('[Auth] Logout complete - token cleared');
+    const startedAt = getCookieSessionRevision();
+    const isCurrent = () => COOKIE_AUTH_ENABLED
+      ? startedAt === getCookieSessionRevision() && token === getCookieSessionVersion()
+      : token === localStorage.getItem(STORAGE_KEYS.token);
+    const outcome = await logoutSession({
+      cookieMode: COOKIE_AUTH_ENABLED,
+      identity: token,
+      revoke: logoutUser,
+      isCurrent,
+    });
+    if (!isCurrent()) return;
+    if (outcome === 'clear') {
+      clearLocalAuth();
+      if (COOKIE_AUTH_ENABLED) announceCookieSessionChange();
+    } else if (outcome === 'failed') {
+      setError('Sign out failed. Please try again.');
     }
-  }, [token]);
+  }, [token, clearLocalAuth]);
 
   const refreshProfile = useCallback(async () => {
     if (!token) return null;
     try {
       const response = await getProfile(token);
+      if (COOKIE_AUTH_ENABLED && getCookieSessionVersion() !== token) return null;
       if (response.success) {
         setUser(response.user);
-        localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(response.user));
+        if (!COOKIE_AUTH_ENABLED) localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(response.user));
         return response.user;
       }
     } catch (err) {
@@ -335,18 +375,23 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
       if (!token) return false;
       try {
         const response = await updateProfile(payload, token);
+        if (COOKIE_AUTH_ENABLED && getCookieSessionVersion() !== token) return false;
         if (response.success) {
-          await refreshProfile();
+          if (COOKIE_AUTH_ENABLED && response.sessionVersion && response.user) {
+            persistAuth(response.sessionVersion, response.user);
+          } else {
+            await refreshProfile();
+          }
           return true;
         }
         setError(response.error || 'Unable to update profile');
         return false;
-      } catch (err: any) {
-        setError(err.message || 'Unable to update profile');
+      } catch (err: unknown) {
+        setError(errorMessage(err, 'Unable to update profile'));
         return false;
       }
     },
-    [token, refreshProfile]
+    [token, refreshProfile, persistAuth]
   );
 
   const value = useMemo<AuthContextValue>(() => ({
@@ -369,7 +414,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     setCurrency,
     formatPrice,
     convertCurrency,
-  }), [user, token, loading, error, handleLogin, handleSignup, handleGoogleLogin, handleForgotPassword, handleResetPassword, handleLogout, refreshProfile, updateMyProfile, currency, setCurrency, formatPrice, convertCurrency]);
+  }), [user, token, loading, sessionValidated, error, handleLogin, handleSignup, handleGoogleLogin, handleForgotPassword, handleResetPassword, handleLogout, refreshProfile, updateMyProfile, currency, setCurrency, formatPrice, convertCurrency]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };

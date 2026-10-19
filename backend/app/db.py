@@ -174,7 +174,7 @@ class PostgresConnectionWrapper:
             self._connection.commit()
             print("[DB] PostgreSQL commit successful")
         except Exception as e:
-            print(f"[DB] PostgreSQL commit FAILED: {e}")
+            print('[DB] PostgreSQL commit failed')
             raise
     
     def rollback(self):
@@ -222,7 +222,7 @@ def _get_database_url():
 
         database_url = urlunparse(parsed._replace(query=urlencode(query)))
     except Exception as e:
-        print(f"[DB] DATABASE_URL normalization warning: {e}")
+        print('[DB] DATABASE_URL normalization failed')
 
     return database_url
 
@@ -240,7 +240,7 @@ def _get_pool():
             )
             print("[DB] Connection pool created (1-10 connections)")
         except Exception as e:
-            print(f"[DB] Failed to create connection pool: {e}")
+            print('[DB] Failed to create connection pool')
             _connection_pool = None
     return _connection_pool
 
@@ -277,7 +277,7 @@ def get_db():
                 g._db_from_pool = from_pool
             except Exception as e:
                 # Bubble up a clear error for logs and error handlers.
-                print(f"[DB] PostgreSQL connection error: {e}")
+                print('[DB] PostgreSQL connection failed')
                 raise RuntimeError("Database connection unavailable") from e
         else:
             db_path = current_app.config['DATABASE']
@@ -476,7 +476,7 @@ def _init_postgres_tables(db):
         try:
             cursor.execute(migration)
         except Exception as e:
-            print(f"[DB] Migration note: {e}")
+            print('[DB] Optional migration failed')
     
     # Create Password Resets Table
     cursor.execute('''

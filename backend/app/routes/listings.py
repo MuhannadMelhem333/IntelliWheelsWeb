@@ -1,6 +1,7 @@
 from flask import Blueprint, jsonify, request
 from ..db import get_db, is_postgres
 from .auth import get_user_from_token
+from ..cookie_auth import request_session_token
 from .cars import car_row_to_dict
 
 # This blueprint will attach directly to /api to handle root-level resource endpoints
@@ -63,7 +64,7 @@ def get_engines():
 
 @bp.route('/my-listings', methods=['GET'])
 def get_my_listings():
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = request_session_token()
     user = get_user_from_token(token)
     
     if not user:
@@ -94,7 +95,7 @@ def get_my_listings():
 @bp.route('/my-listings/analytics', methods=['GET'])
 def get_my_listings_analytics():
     """Get analytics for user's own listings."""
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = request_session_token()
     user = get_user_from_token(token)
     
     if not user:
@@ -204,7 +205,7 @@ def get_my_listings_analytics():
         })
         
     except Exception as e:
-        print(f"My listings analytics error: {e}")
+        print('[listings] Operation failed')
         try:
             db.rollback()
         except:
@@ -238,7 +239,7 @@ def request_callback():
     message = data.get('message')
     preferred_time = data.get('preferred_time')
 
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = request_session_token()
     user = get_user_from_token(token)
     user_id = user['id'] if user else None
 
@@ -257,9 +258,9 @@ def request_callback():
         db.commit()
         return jsonify({'success': True})
     except Exception as e:
-        print('Request callback error:', e)
+        print('[listings] Operation failed')
         try:
             db.rollback()
         except:
             pass
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Unable to complete request'}), 500

@@ -2,6 +2,7 @@ from flask import Blueprint, request, jsonify
 import os
 from ..db import get_db, is_postgres
 from .auth import get_user_from_token
+from ..cookie_auth import request_session_token
 from .cars import car_row_to_dict
 
 bp = Blueprint('favorites', __name__, url_prefix='/api/favorites')
@@ -33,7 +34,7 @@ def ensure_favorites_table():
             ''')
         db.commit()
     except Exception as e:
-        print(f"[Favorites] Table creation note: {e}")
+        print('[Favorites] Table initialization failed')
         try:
             db.rollback()
         except:
@@ -42,7 +43,7 @@ def ensure_favorites_table():
 
 @bp.route('', methods=['GET'])
 def get_favorites():
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = request_session_token()
     user = get_user_from_token(token)
     
     if not user:
@@ -72,14 +73,12 @@ def get_favorites():
         cars = [car_row_to_dict(row) for row in cursor.fetchall()]
         return jsonify({'success': True, 'cars': cars})
     except Exception as e:
-        print(f"[Favorites] Error getting favorites: {e}")
-        import traceback
-        traceback.print_exc()
+        print('[Favorites] Fetch failed')
         return jsonify({'success': True, 'cars': []})  # Return empty list on error
 
 @bp.route('', methods=['POST'])
 def add_favorite():
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = request_session_token()
     user = get_user_from_token(token)
     if not user:
         return jsonify({'success': False, 'error': 'Authentication required'}), 401
@@ -104,14 +103,12 @@ def add_favorite():
         db.commit()
         return jsonify({'success': True})
     except Exception as e:
-        print(f"[Favorites] Error adding favorite: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': str(e)}), 500
+        print('[Favorites] Add failed')
+        return jsonify({'success': False, 'error': 'Failed to add favorite'}), 500
 
 @bp.route('/<int:car_id>', methods=['DELETE'])
 def remove_favorite(car_id):
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = request_session_token()
     user = get_user_from_token(token)
     if not user:
         return jsonify({'success': False, 'error': 'Authentication required'}), 401
@@ -127,5 +124,5 @@ def remove_favorite(car_id):
         db.commit()
         return jsonify({'success': True})
     except Exception as e:
-        print(f"[Favorites] Error removing favorite: {e}")
-        return jsonify({'success': False, 'error': str(e)}), 500
+        print('[Favorites] Remove failed')
+        return jsonify({'success': False, 'error': 'Failed to remove favorite'}), 500

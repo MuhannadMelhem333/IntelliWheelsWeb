@@ -1,13 +1,13 @@
 'use client';
 
+import Image from 'next/image';
 import { useAuth } from '@/context/AuthContext';
 import { fetchCarById, fetchCarReviews, submitReview, deleteReview, fetchFavorites, addFavorite, removeFavorite, requestCallback, sendMessage } from '@/lib/api';
-import { STORAGE_KEYS } from '@/lib/config';
 import { Car, Review, ReviewStats } from '@/lib/types';
+import { publicPathForPage } from '@/lib/publicRoutes';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-
-type ThemeMode = 'light' | 'dark' | 'system';
+import { usePublicPreferences } from './public/PublicRouteShell';
 
 interface CarDetailViewProps {
   carId: string;
@@ -35,35 +35,25 @@ const getBackLabel = (from: string | null): string => {
 const handleGoBack = (router: ReturnType<typeof useRouter>, searchParams: URLSearchParams) => {
   const from = searchParams.get('from');
   if (from) {
-    // Check if coming from a dealer page (format: dealer-{id})
-    if (from.startsWith('dealer-')) {
-      const dealerId = from.replace('dealer-', '');
-      router.push(`/dealers/${dealerId}`);
-    } else {
-      // Navigate to the specified view (listings, favorites, myListings, etc.)
-      router.push(`/?view=${from}`);
-    }
+    router.push(publicPathForPage(from));
   } else if (typeof window !== 'undefined' && window.history.length > 2) {
     // If we have browser history, go back
     router.back();
   } else {
     // Fallback to catalog
-    router.push('/?view=listings');
+    router.push('/listings');
   }
 };
 
 export function CarDetailView({ carId }: CarDetailViewProps) {
   const numericId = Number(carId);
   const { token, user, formatPrice } = useAuth();
+  const publicPreferences = usePublicPreferences();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [car, setCar] = useState<Car | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  
-  // Theme state
-  const [theme, setTheme] = useState<ThemeMode>('light');
-  const [systemPrefersDark, setSystemPrefersDark] = useState(false);
   
   // Toast state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -99,21 +89,7 @@ export function CarDetailView({ carId }: CarDetailViewProps) {
     return base.replace(/\/api$/, '');
   }, []);
 
-  // Load theme from localStorage and detect system preference
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const storedTheme = localStorage.getItem(STORAGE_KEYS.theme) as ThemeMode | null;
-    if (storedTheme) setTheme(storedTheme);
-    
-    const darkMatcher = window.matchMedia('(prefers-color-scheme: dark)');
-    setSystemPrefersDark(darkMatcher.matches);
-    const handler = (e: MediaQueryListEvent) => setSystemPrefersDark(e.matches);
-    darkMatcher.addEventListener('change', handler);
-    return () => darkMatcher.removeEventListener('change', handler);
-  }, []);
-  
-  const resolvedTheme = theme === 'system' ? (systemPrefersDark ? 'dark' : 'light') : theme;
-  const isDark = resolvedTheme === 'dark';
+  const isDark = publicPreferences.theme === 'dark';
 
   // Toast helper
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info') => {
@@ -319,7 +295,7 @@ export function CarDetailView({ carId }: CarDetailViewProps) {
     const deduped = Array.from(new Set(combined));
     console.log('[Gallery] final deduped:', deduped);
     if (car) {
-      const synthetic = buildFallbackGallery(car, deduped);
+      const synthetic = buildFallbackGallery();
       synthetic.forEach((url) => {
         if (!deduped.includes(url)) {
           deduped.push(url);
@@ -478,7 +454,9 @@ export function CarDetailView({ carId }: CarDetailViewProps) {
         <div className="mt-6 grid gap-6 lg:grid-cols-[2fr,1fr]">
           <div className={`rounded-3xl border shadow-sm ${isDark ? 'border-slate-700 bg-slate-800' : 'border-slate-100 bg-white'}`}>
             <div className="relative h-96 w-full overflow-hidden rounded-t-3xl">
-              <img
+              <Image
+                unoptimized
+                fill
                 src={activeImage}
                 alt={`${car.make} ${car.model}`}
                 className="h-full w-full cursor-zoom-in object-cover"
@@ -519,9 +497,9 @@ export function CarDetailView({ carId }: CarDetailViewProps) {
                     key={`${url}-${index}`}
                     type="button"
                     onClick={() => setActiveIndex(index)}
-                    className={`h-16 w-16 overflow-hidden rounded-xl border ${index === activeIndex ? 'border-sky-500' : isDark ? 'border-slate-600' : 'border-slate-200'}`}
+                    className={`relative h-16 w-16 overflow-hidden rounded-xl border ${index === activeIndex ? 'border-sky-500' : isDark ? 'border-slate-600' : 'border-slate-200'}`}
                   >
-                    <img src={url} alt={`Thumbnail ${index + 1}`} className="h-full w-full object-cover" />
+                    <Image unoptimized fill src={url} alt={`Thumbnail ${index + 1}`} className="object-cover" />
                   </button>
                 ))}
               </div>
@@ -944,7 +922,10 @@ export function CarDetailView({ carId }: CarDetailViewProps) {
               ‹
             </button>
           )}
-          <img
+          <Image
+            unoptimized
+            width={1600}
+            height={1000}
             src={gallery[fullscreenIndex]}
             alt={`Fullscreen ${fullscreenIndex + 1}`}
             className="max-h-[90vh] max-w-5xl rounded-3xl object-contain shadow-2xl"
@@ -966,9 +947,9 @@ export function CarDetailView({ carId }: CarDetailViewProps) {
                   key={`${url}-fullscreen-${index}`}
                   type="button"
                   onClick={() => setFullscreenIndex(index)}
-                  className={`h-16 w-16 overflow-hidden rounded-xl border ${index === fullscreenIndex ? 'border-white' : 'border-transparent opacity-70'}`}
+                  className={`relative h-16 w-16 overflow-hidden rounded-xl border ${index === fullscreenIndex ? 'border-white' : 'border-transparent opacity-70'}`}
                 >
-                  <img src={url} alt={`Fullscreen thumbnail ${index + 1}`} className="h-full w-full object-cover" />
+                  <Image unoptimized fill src={url} alt={`Fullscreen thumbnail ${index + 1}`} className="object-cover" />
                 </button>
               ))}
             </div>
@@ -1015,25 +996,8 @@ function buildDescriptionCopy(car: Car | null) {
   return segments.join(' ');
 }
 
-function buildFallbackGallery(car: Car | null, existing: string[]) {
+function buildFallbackGallery() {
   // Don't add fallback/stock images - only show actual uploaded images
   // Users want to see only their uploaded photos, not placeholder stock images
   return [];
-}
-
-function buildStockImageUrl(car: Car, angle: string) {
-  if (!car.make || !car.model) {
-    return '';
-  }
-  const params = new URLSearchParams({
-    customer: 'img',
-    make: car.make,
-    modelFamily: car.model,
-    modelRange: car.model,
-    modelYear: String(car.year ?? new Date().getFullYear()),
-    angle,
-    zoomType: 'fullscreen',
-    width: '1600',
-  });
-  return `https://cdn.imagin.studio/getImage?${params.toString()}`;
 }

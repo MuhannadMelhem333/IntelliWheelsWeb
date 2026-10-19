@@ -1,6 +1,5 @@
 import os
 import json
-import joblib
 import base64
 from flask import current_app
 
@@ -25,7 +24,6 @@ class AIService:
     ]
     
     def __init__(self):
-        self.price_model = None
         self.embeddings = None
         self.gemini_model = None
         self.active_model_name = None
@@ -53,9 +51,9 @@ class AIService:
                     methods = getattr(m, 'supported_generation_methods', [])
                     if 'generateContent' in methods:
                         available_model_names.append(m.name)
-                print(f"Available Gemini models: {available_model_names[:10]}")
+                print('ai.models_listed')
             except Exception as e:
-                print(f"Could not list models: {e}")
+                print('ai.model_listing_failed')
                 # Continue anyway - we'll try our predefined list
             
             # Try to use a model from the environment variable first
@@ -72,13 +70,13 @@ class AIService:
                 if not model_name:
                     continue
                 try:
-                    print(f"Trying Gemini model: {model_name}")
+                    print('ai.model_initialization_started')
                     model = genai.GenerativeModel(model_name)
                     # Just check if model object is created successfully
                     # Skip test request to avoid rate limiting
                     self.gemini_model = model
                     self.active_model_name = model_name
-                    print(f"✓ Gemini AI initialized with model: {model_name}")
+                    print('ai.model_initialized')
                     self._init_error = None
                     return
                 except Exception as e:
@@ -89,7 +87,7 @@ class AIService:
                         self.gemini_model = None
                         self._init_error = "Invalid API key"
                         return
-                    print(f"✗ Model {model_name} failed: {str(e)[:100]}")
+                    print('ai.model_initialization_failed')
                     continue
             
             # If we have available models but none worked from our list, try the first available one
@@ -97,15 +95,15 @@ class AIService:
                 for available in available_model_names:
                     if 'gemini' in available.lower():
                         try:
-                            print(f"Trying available model: {available}")
+                            print('ai.fallback_initialization_started')
                             model = genai.GenerativeModel(available)
                             self.gemini_model = model
                             self.active_model_name = available
-                            print(f"✓ Gemini AI initialized with model: {available}")
+                            print('ai.model_initialized')
                             self._init_error = None
                             return
                         except Exception as e:
-                            print(f"✗ Model {available} failed: {str(e)[:50]}")
+                            print('ai.model_initialization_failed')
                             continue
             
             print("ERROR: Could not initialize any Gemini model")
@@ -113,9 +111,9 @@ class AIService:
             self._init_error = "No compatible Gemini model found - check API key"
             
         except Exception as e:
-            print(f"Failed to initialize Gemini: {e}")
+            print('ai.initialization_failed')
             self.gemini_model = None
-            self._init_error = str(e)
+            self._init_error = 'AI initialization failed'
         
     @classmethod
     def get_instance(cls):
@@ -123,24 +121,8 @@ class AIService:
             cls._instance = AIService()
         return cls._instance
 
-    def load_models(self):
-        # Lazy load models
-        if self.price_model:
-            return
-
-        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        model_path = os.path.join(base_dir, 'models', 'fair_price_model.joblib')
-        
-        if os.path.exists(model_path):
-            try:
-                self.price_model = joblib.load(model_path)
-                print("Loaded price model")
-            except Exception as e:
-                print(f"Failed to load price model: {e}")
-
     def estimate_price(self, make, model, year, specs, currency='JOD'):
         """Estimate car price based on make, model, year and specs."""
-        self.load_models()
         
         # Base prices by make category (in JOD)
         luxury_makes = ['mercedes', 'bmw', 'audi', 'lexus', 'porsche', 'bentley', 'rolls-royce', 'maserati', 'jaguar', 'land rover', 'range rover']
@@ -215,7 +197,7 @@ class AIService:
             error = getattr(self, '_init_error', 'Unknown error')
             if 'Invalid API key' in error:
                 return {'text': f"AI service error: Your Gemini API key is invalid. Please update it in the Render dashboard with a valid key from https://aistudio.google.com/app/apikey"}
-            return {'text': f"I am the IntelliWheels AI Assistant. The AI service is currently unavailable. Error: {error}"}
+            return {'text': 'The AI service is currently unavailable. Please try again later.'}
 
         try:
             # Detect if message is in Arabic
@@ -330,7 +312,7 @@ Be helpful, concise, and knowledgeable about cars."""
                     
                     response_obj = self.gemini_model.generate_content(prompt_parts)
                 except Exception as e:
-                    print(f"Image processing error: {e}")
+                    print('ai.chat_image_failed')
                     # Fall back to text-only if image fails
                     if message:
                         response_obj = self.gemini_model.generate_content([
@@ -338,7 +320,7 @@ Be helpful, concise, and knowledgeable about cars."""
                             "\\n".join(contents)
                         ])
                     else:
-                        return {'text': f"I couldn't process that image. Error: {str(e)[:100]}"}
+                        return {'text': "I couldn't process that image. Please try again with another image."}
             else:
                 response_obj = self.gemini_model.generate_content([
                     system_prompt,
@@ -359,7 +341,7 @@ Be helpful, concise, and knowledgeable about cars."""
                         # Remove the JSON block from the user-facing text
                         response_text = response_text.replace(match.group(0), '').strip()
                 except Exception as e:
-                    print(f"Failed to parse listing JSON: {e}")
+                    print('ai.listing_json_parse_failed')
 
             return {
                 'text': response_text,
@@ -368,7 +350,7 @@ Be helpful, concise, and knowledgeable about cars."""
             
         except Exception as e:
             error_msg = str(e)
-            print(f"Gemini API error: {error_msg}")
+            print('ai.chat_failed')
             # Provide clear error messages - prioritize API key errors
             error_lower = error_msg.lower()
             if any(x in error_lower for x in ['api_key', 'api key', 'invalid', 'authentication', '400', '401', '403']):
@@ -377,7 +359,7 @@ Be helpful, concise, and knowledgeable about cars."""
                 return {'text': "I cannot process that request. Please rephrase your question."}
             elif 'quota' in error_lower or 'resource' in error_lower:
                 return {'text': "AI service temporarily unavailable. Please try again in a few minutes."}
-            return {'text': f"I encountered an issue: {error_msg[:150]}"}
+            return {'text': 'The AI service is currently unavailable. Please try again later.'}
 
     def semantic_search(self, query, limit):
         """Search cars using semantic scoring - always returns results ranked by relevance."""
@@ -386,12 +368,10 @@ Be helpful, concise, and knowledgeable about cars."""
         
         try:
             db = get_db()
-            print(f"[Semantic Search] Using shared DB connection")
             
             # Get ALL cars from database to score them
             cursor = db.execute("SELECT id, make, model, year, price, currency, image_url, specs FROM cars")
             all_cars = cursor.fetchall()
-            print(f"[Semantic Search] Total cars in DB: {len(all_cars)}")
             
             if not all_cars:
                 return []
@@ -512,7 +492,6 @@ Be helpful, concise, and knowledgeable about cars."""
             
             # Take top results
             top_results = scored_cars[:limit]
-            print(f"[Semantic Search] Returning {len(top_results)} results (top score: {top_results[0][0] if top_results else 0})")
             
             # Format results
             results = []
@@ -543,13 +522,10 @@ Be helpful, concise, and knowledgeable about cars."""
                     "score": score
                 })
             
-            print(f"[Semantic Search] Results: {[(r['car']['make'], r['car']['model'], r['score']) for r in results]}")
             return results
             
         except Exception as e:
-            import traceback
-            print(f"[Semantic Search] ERROR: {e}")
-            traceback.print_exc()
+            print('ai.search_failed')
             return []
 
     def analyze_image(self, image_base64):
@@ -557,14 +533,13 @@ Be helpful, concise, and knowledgeable about cars."""
             self._init_gemini()
             
         if not self.gemini_model:
-            error = getattr(self, '_init_error', 'AI service unavailable')
             return {
                 "make": "",
                 "model": "",
                 "year": None,
                 "bodyStyle": "",
                 "estimatedPrice": None,
-                "conditionDescription": f"AI Error: {error}",
+                "conditionDescription": 'The AI service is currently unavailable. Please try again later.',
                 "error": True
             }
 
@@ -617,7 +592,7 @@ Only respond with the JSON, no other text."""
             return result
             
         except json.JSONDecodeError as e:
-            print(f"Vision JSON parse error: {e}, response was: {response_text[:200] if 'response_text' in dir() else 'N/A'}")
+            print('ai.vision_json_parse_failed')
             return {
                 "make": "",
                 "model": "",
@@ -628,7 +603,7 @@ Only respond with the JSON, no other text."""
                 "error": True
             }
         except Exception as e:
-            print(f"Image analysis error: {e}")
+            print('ai.vision_failed')
             error_msg = str(e)
             error_lower = error_msg.lower()
             if 'blocked' in error_lower or 'safety' in error_lower:
@@ -638,7 +613,7 @@ Only respond with the JSON, no other text."""
             elif 'quota' in error_lower or 'resource' in error_lower:
                 desc = "AI service temporarily unavailable. Please try again later."
             else:
-                desc = f"Analysis failed: {error_msg[:100]}"
+                desc = 'Image analysis failed. Please try again later.'
             
             return {
                 "make": "",
@@ -752,7 +727,7 @@ If you need more information, just respond normally without the listing_data."""
                 }
                 
         except Exception as e:
-            print(f"Listing assistant error: {e}")
+            print('ai.listing_assistant_failed')
             error_msg = str(e)
             error_lower = error_msg.lower()
             if any(x in error_lower for x in ['api_key', 'api key', 'invalid', 'authentication', '400', '401', '403']):
@@ -760,7 +735,7 @@ If you need more information, just respond normally without the listing_data."""
             elif 'blocked' in error_lower or 'safety' in error_lower:
                 response_text = "I cannot process that request. Please try a different question."
             else:
-                response_text = f"I encountered an issue: {error_msg[:100]}"
+                response_text = 'The AI service is currently unavailable. Please try again later.'
             return {
                 "success": True,
                 "response": response_text,

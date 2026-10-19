@@ -5,10 +5,10 @@ Provides input validation, sanitization, and rate limiting.
 
 import re
 import html
-import time
 from functools import wraps
-from collections import defaultdict
-from flask import request, jsonify, g
+from flask import request, jsonify, g, current_app
+from .cookie_auth import request_session_token
+from .rate_limits import RateLimitUnavailable
 
 # ============================================
 # Input Validation
@@ -130,9 +130,6 @@ def sanitize_search_query(query: str) -> str:
 # Rate Limiting (Simple In-Memory)
 # ============================================
 
-# Store: {ip: [(timestamp, count), ...]}
-_rate_limit_store = defaultdict(list)
-
 def rate_limit(max_requests: int = 10, window_seconds: int = 60):
     """
     Decorator to rate limit endpoints.
@@ -144,28 +141,29 @@ def rate_limit(max_requests: int = 10, window_seconds: int = 60):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            # Get client IP
-            ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-            if ip:
-                ip = ip.split(',')[0].strip()
-            
-            current_time = time.time()
-            window_start = current_time - window_seconds
-            
-            # Clean old entries and count recent requests
-            _rate_limit_store[ip] = [
-                t for t in _rate_limit_store[ip] 
-                if t > window_start
-            ]
-            
-            if len(_rate_limit_store[ip]) >= max_requests:
-                return jsonify({
+            if request.method == 'OPTIONS':
+                return f(*args, **kwargs)
+            # Forwarded headers are untrusted until a deployment's exact proxy
+            # topology is configured. Never take a client-supplied first hop.
+            key = (request.endpoint, request.remote_addr or 'unknown', max_requests, window_seconds)
+            try:
+                retry = current_app.extensions['rate_limiter'].check(key, max_requests, window_seconds)
+            except RateLimitUnavailable:
+                response = jsonify({'success': False, 'error': 'Service temporarily unavailable. Please try again later.'})
+                response.status_code = 503
+                response.headers['Retry-After'] = '5'
+                response.headers['Cache-Control'] = 'no-store'
+                return response
+            if retry:
+                response = jsonify({
                     'success': False,
                     'error': 'Too many requests. Please try again later.',
-                    'retry_after': window_seconds
-                }), 429
-            
-            _rate_limit_store[ip].append(current_time)
+                    'retry_after': retry
+                })
+                response.status_code = 429
+                response.headers['Retry-After'] = str(retry)
+                response.headers['Cache-Control'] = 'no-store'
+                return response
             return f(*args, **kwargs)
         
         return decorated_function
@@ -225,10 +223,18 @@ def add_security_headers(response):
     response.headers['X-Frame-Options'] = 'DENY'
     # Prevent MIME type sniffing
     response.headers['X-Content-Type-Options'] = 'nosniff'
-    # Enable XSS filter
-    response.headers['X-XSS-Protection'] = '1; mode=block'
+    # Disable obsolete browser XSS filters; CSP provides explicit controls.
+    response.headers['X-XSS-Protection'] = '0'
     # Referrer policy
     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
+    response.headers['Content-Security-Policy'] = "base-uri 'none'; object-src 'none'; frame-ancestors 'none'"
+    # JSON APIs do not need executable document content. Leave Swagger UI and
+    # existing media responses on the compatibility baseline above.
+    if response.mimetype == 'application/json':
+        response.headers['Content-Security-Policy'] += "; default-src 'none'; form-action 'none'"
+    if request.is_secure:
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000'
     return response
 
 # ============================================
@@ -241,7 +247,7 @@ def require_auth():
     Returns None if not authenticated.
     """
     from .routes.auth import get_user_from_token
-    token = request.headers.get('Authorization', '').replace('Bearer ', '')
+    token = request_session_token()
     return get_user_from_token(token)
 
 def token_required(f):
@@ -252,7 +258,7 @@ def token_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         from .routes.auth import get_user_from_token
-        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        token = request_session_token()
         
         if not token:
             return jsonify({

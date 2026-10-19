@@ -70,7 +70,7 @@ def ensure_messages_tables():
             ''')
         db.commit()
     except Exception as e:
-        print(f"[Messages] Table creation error (may already exist): {e}")
+        print('[messages] Operation failed')
         # Rollback to clear aborted transaction state in PostgreSQL
         try:
             db.rollback()
@@ -144,14 +144,12 @@ def get_conversations():
         
         return jsonify({'success': True, 'conversations': conversations})
     except Exception as e:
-        import traceback
-        print(f"Error fetching conversations: {e}")
-        traceback.print_exc()
+        print('[messages] Operation failed')
         try:
             db.rollback()
         except:
             pass
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Unable to complete request'}), 500
 
 
 @bp.route('/conversations/<int:conversation_id>', methods=['GET'])
@@ -228,7 +226,7 @@ def get_messages(conversation_id):
         
         return jsonify({'success': True, 'messages': messages})
     except Exception as e:
-        print(f"Error fetching messages: {e}")
+        print('[messages] Operation failed')
         try:
             db.rollback()
         except:
@@ -268,7 +266,7 @@ def send_message():
         if not recipient:
             return jsonify({'success': False, 'error': 'Recipient not found'}), 404
     except Exception as e:
-        print(f"[Messages] Error validating recipient: {e}")
+        print('[messages] Operation failed')
         try:
             db.rollback()
         except:
@@ -354,14 +352,12 @@ def send_message():
             'message': 'Message sent'
         })
     except Exception as e:
-        import traceback
-        print(f"Error sending message: {e}")
-        traceback.print_exc()
+        print('[messages] Operation failed')
         try:
             db.rollback()
         except:
             pass
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Unable to complete request'}), 500
 
 
 @bp.route('/unread-count', methods=['GET'])
@@ -390,5 +386,5 @@ def get_unread_count():
         
         return jsonify({'success': True, 'unread_count': row['count'] if row else 0})
     except Exception as e:
-        print(f"Error getting unread count: {e}")
+        print('[messages] Operation failed')
         return jsonify({'success': True, 'unread_count': 0})

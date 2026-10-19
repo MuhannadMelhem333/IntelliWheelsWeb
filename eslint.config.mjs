@@ -7,6 +7,8 @@ const eslintConfig = defineConfig([
   ...nextTs,
   // Override default ignores of eslint-config-next.
   globalIgnores([
+    // Python dependencies installed for the local backend are not frontend source.
+    "**/.venv/**",
     // Default ignores of eslint-config-next:
     ".next/**",
     "out/**",

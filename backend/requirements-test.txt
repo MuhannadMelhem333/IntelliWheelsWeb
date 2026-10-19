@@ -1,0 +1,2 @@
+# Install after requirements.txt; emulator only, never a production service.
+fakeredis[lua]==2.38.0

@@ -1,8 +1,10 @@
 'use client';
 
+import Image from 'next/image';
 import { useAuth } from '@/context/AuthContext';
 import { fetchDealerById } from '@/lib/api';
 import { DealerDetail } from '@/lib/types';
+import { publicPathForPage } from '@/lib/publicRoutes';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
@@ -31,14 +33,13 @@ const getBackLabel = (from: string | null): string => {
 const handleGoBack = (router: ReturnType<typeof useRouter>, searchParams: URLSearchParams) => {
   const from = searchParams.get('from');
   if (from) {
-    // If we have a 'from' parameter, navigate there
-    router.push(`/?view=${from}`);
+    router.push(publicPathForPage(from));
   } else if (typeof window !== 'undefined' && window.history.length > 2) {
     // If we have browser history, go back
     router.back();
   } else {
     // Fallback to listings
-    router.push('/?view=listings');
+    router.push('/listings');
   }
 };
 
@@ -124,8 +125,8 @@ export function DealerDetailView({ dealerId }: DealerDetailViewProps) {
           ← {getBackLabel(searchParams.get('from'))}
         </button>
         <div className="overflow-hidden rounded-3xl border border-slate-100 bg-white shadow">
-          <div className="h-72 w-full bg-slate-100">
-            <img src={heroImage} alt={dealer.name} className="h-full w-full object-cover" />
+          <div className="relative h-72 w-full bg-slate-100">
+            <Image unoptimized fill src={heroImage} alt={dealer.name} className="object-cover" />
           </div>
           <div className="grid gap-6 p-6 lg:grid-cols-[1.5fr,1fr]">
             <div>
@@ -160,7 +161,7 @@ export function DealerDetailView({ dealerId }: DealerDetailViewProps) {
               {dealer.cars.map((car) => (
                 <div key={car.id} className="rounded-3xl border border-slate-100 bg-white p-4 shadow">
                   <div className="flex gap-4">
-                    <img src={car.image || '/placeholder-car.svg'} alt={`${car.make} ${car.model}`} className="h-24 w-32 rounded-2xl object-cover" />
+                    <Image unoptimized width={128} height={96} src={car.image || '/placeholder-car.svg'} alt={`${car.make} ${car.model}`} className="h-24 w-32 rounded-2xl object-cover" />
                     <div className="flex-1">
                       <h3 className="text-lg font-semibold text-slate-900">{car.make} {car.model}</h3>
                       <p className="text-sm text-slate-500">{car.year || 'Year TBD'}</p>

@@ -4,6 +4,13 @@ import { useEffect, useState } from 'react';
 import { DealerSummary } from '@/lib/types';
 import 'leaflet/dist/leaflet.css';
 
+type ReactLeafletModule = typeof import('react-leaflet');
+type LeafletModule = typeof import('leaflet');
+interface MapComponentState {
+  MapContainer: ReactLeafletModule['MapContainer']; TileLayer: ReactLeafletModule['TileLayer'];
+  Marker: ReactLeafletModule['Marker']; Popup: ReactLeafletModule['Popup']; L: LeafletModule;
+}
+
 interface DealerMapProps {
   dealers: DealerSummary[];
   onDealerClick: (dealerId: number) => void;
@@ -11,14 +18,15 @@ interface DealerMapProps {
 }
 
 export function DealerMap({ dealers, onDealerClick, isDark = false }: DealerMapProps) {
-  const [MapComponents, setMapComponents] = useState<any>(null);
+  const [MapComponents, setMapComponents] = useState<MapComponentState | null>(null);
 
   useEffect(() => {
     // Dynamically import Leaflet components (client-side only)
     import('react-leaflet').then((mod) => {
       import('leaflet').then((L) => {
         // Fix default marker icons
-        delete (L.Icon.Default.prototype as any)._getIconUrl;
+        const markerPrototype = L.Icon.Default.prototype as L.Icon.Default & { _getIconUrl?: unknown };
+        delete markerPrototype._getIconUrl;
         L.Icon.Default.mergeOptions({
           iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon-2x.png',
           iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png',
@@ -98,7 +106,7 @@ export function DealerMap({ dealers, onDealerClick, isDark = false }: DealerMapP
           }
         />
         {dealers.map((dealer, index) => {
-          const location = (dealer as any).location;
+          const location = dealer.location;
           if (!location?.lat || !location?.lng) return null;
           
           return (

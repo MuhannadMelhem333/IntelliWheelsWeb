@@ -32,6 +32,7 @@ export interface CarSpecs {
 }
 
 export interface CarMedia {
+  assetId?: string;
   type: 'image' | 'video';
   url: string;
   label?: string;

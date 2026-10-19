@@ -27,6 +27,8 @@ downloads/
 eggs/
 .eggs/
 lib/
+!/src/lib/
+!/src/lib/**
 lib64/
 parts/
 sdist/
@@ -74,6 +76,7 @@ service-account*.json
 **/secrets/
 .secrets
 ADMIN_CREDENTIALS.txt
+recovery-codes.txt
 *CREDENTIALS*
 *credentials*
 *password*
@@ -223,3 +226,10 @@ intelliwheels.db
 # =============================================================================
 test_*.py
 !backend/app/routes/test_*.py
+!backend/test_import_local_cars.py
+!backend/test_public_journey.py
+!backend/test_rate_limits.py
+!backend/test_inspect_uploads.py
+!backend/test_inspect_upload_provider.py
+!backend/test_video_validation.py
+!backend/test_release_config.py

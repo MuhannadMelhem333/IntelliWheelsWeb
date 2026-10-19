@@ -1,5 +1,6 @@
 const rawApiBase =
   process.env.NEXT_PUBLIC_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_URL ||
   process.env.NEXT_PUBLIC_API_BASE ||
   process.env.NEXT_PUBLIC_BACKEND_URL ||
   process.env.API_BASE_URL ||
@@ -13,6 +14,8 @@ function normalizeApiBase(base: string | undefined) {
 }
 
 export const API_BASE_URL = normalizeApiBase(rawApiBase);
+// Coordinated rollout gate: keep aligned with the backend after acceptance.
+export const COOKIE_AUTH_ENABLED: boolean = false;
 // export const DEFAULT_GEMINI_API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY ?? '';
 
 export const STORAGE_KEYS = {
@@ -20,6 +23,7 @@ export const STORAGE_KEYS = {
   user: 'intelliwheels-user',
   chatSessions: 'intelliwheels-chat-sessions',
   theme: 'intelliwheels-theme',
+  language: 'intelliwheels-language',
   serviceMode: 'intelliwheels-service-mode',
   currency: 'intelliwheels-currency',
 };

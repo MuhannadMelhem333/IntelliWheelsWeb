@@ -1,9 +1,13 @@
-# NOTE: Database is hosted on CockroachDB Serverless (free 10 GiB tier)
-# Set DATABASE_URL in Render dashboard manually with your CockroachDB connection string
+# Three-environment deployment: dev → stg → production
+# Each service deploys from its respective branch.
+# Set DATABASE_URL, GEMINI_API_KEY, SECRET_KEY in the Render dashboard per service.
+# CockroachDB Serverless (free 10 GiB tier) — one DB per environment recommended.
 
 services:
+  # ── Production ──────────────────────────────────────────────
   - type: web
-    name: intelliwheels-backend
+    name: intelliwheels-backend-prod
+    branch: production
     rootDir: backend
     env: python
     plan: starter
@@ -12,15 +16,65 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: DATABASE_URL
-        sync: false  # Set CockroachDB connection string in Render dashboard
-      - key: GEMINI_API_KEY
-        sync: false  # Set this in Render dashboard for security
-      - key: SECRET_KEY
-        sync: false  # Set this in Render dashboard for security
       - key: FLASK_ENV
         value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        sync: false
       - key: FRONTEND_ORIGIN
-        value: https://www.intelliwheels.co,https://intelliwheels.co,https://intelli-wheels.vercel.app
+        value: https://www.intelliwheels.co,https://intelliwheels.co
       - key: BACKEND_URL
-        value: https://intelliwheels.onrender.com
+        sync: false
+
+  # ── Staging ────────────────────────────────────────────────
+  - type: web
+    name: intelliwheels-backend-stg
+    branch: stg
+    rootDir: backend
+    env: python
+    plan: starter
+    buildCommand: bash render-build.sh
+    startCommand: gunicorn run:app --bind 0.0.0.0:$PORT --timeout 120 --workers 2
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: FLASK_ENV
+        value: staging
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: BACKEND_URL
+        sync: false
+
+  # ── Development ────────────────────────────────────────────
+  - type: web
+    name: intelliwheels-backend-dev
+    branch: dev
+    rootDir: backend
+    env: python
+    plan: starter
+    buildCommand: bash render-build.sh
+    startCommand: gunicorn run:app --bind 0.0.0.0:$PORT --timeout 120 --workers 2
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: FLASK_ENV
+        value: development
+      - key: DATABASE_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: BACKEND_URL
+        sync: false

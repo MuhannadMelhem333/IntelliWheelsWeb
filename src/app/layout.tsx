@@ -58,7 +58,6 @@ export const metadata: Metadata = {
       'max-video-preview': -1,
     },
   },
-  alternates: { canonical: SITE_URL },
   manifest: '/manifest.webmanifest',
   category: 'automotive',
   openGraph: {

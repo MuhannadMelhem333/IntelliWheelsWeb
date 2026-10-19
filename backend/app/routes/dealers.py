@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request, g
 from ..db import get_db, is_postgres
-from ..security import token_required
+from ..security import token_required, rate_limit
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -19,8 +19,8 @@ ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@intelliwheels.co')
 def send_email(to_email, subject, body):
     """Send an email notification. Returns True if sent, False otherwise."""
     if not SMTP_HOST or not SMTP_USER:
-        print(f"[Email] Would send to {to_email}: {subject}")
-        print(f"[Email] Body: {body}")
+        # Do not log request content or personal data.
+        # Do not log request content or personal data.
         return False  # Email not configured
     
     try:
@@ -36,7 +36,7 @@ def send_email(to_email, subject, body):
             server.send_message(msg)
         return True
     except Exception as e:
-        print(f"[Email Error] Failed to send: {e}")
+        print('[dealers] Operation failed')
         return False
 
 @bp.route('', methods=['GET'])
@@ -63,6 +63,7 @@ def get_dealer(id):
 # ============ DEALER APPLICATIONS ============
 
 @bp.route('/applications', methods=['POST'])
+@rate_limit(max_requests=5, window_seconds=60)
 def submit_application():
     """Submit a new dealer application"""
     data = request.get_json()
@@ -147,7 +148,7 @@ def submit_application():
             'application_id': app_id
         })
     except Exception as e:
-        print(f'Error submitting application: {e}')
+        print('[dealers] Operation failed')
         try:
             db.rollback()
         except:
@@ -155,6 +156,7 @@ def submit_application():
         return jsonify({'success': False, 'error': 'Failed to submit application'}), 500
 
 @bp.route('/applications', methods=['GET'])
+@rate_limit(max_requests=60, window_seconds=60)
 @token_required
 def get_applications():
     """Get all dealer applications (admin only)"""
@@ -186,7 +188,7 @@ def get_applications():
         applications = [dict(row) for row in cursor.fetchall()]
         return jsonify({'success': True, 'applications': applications})
     except Exception as e:
-        print(f'Error fetching applications: {e}')
+        print('[dealers] Operation failed')
         try:
             db.rollback()
         except:
@@ -194,6 +196,7 @@ def get_applications():
         return jsonify({'success': False, 'error': 'Failed to fetch applications'}), 500
 
 @bp.route('/applications/<int:id>', methods=['GET'])
+@rate_limit(max_requests=60, window_seconds=60)
 @token_required
 def get_application(id):
     """Get a specific application (admin only)"""
@@ -213,7 +216,7 @@ def get_application(id):
         
         return jsonify({'success': True, 'application': dict(app_row)})
     except Exception as e:
-        print(f'Error fetching application: {e}')
+        print('[dealers] Operation failed')
         try:
             db.rollback()
         except:
@@ -221,6 +224,7 @@ def get_application(id):
         return jsonify({'success': False, 'error': 'Failed to fetch application'}), 500
 
 @bp.route('/applications/<int:id>/approve', methods=['PUT'])
+@rate_limit(max_requests=20, window_seconds=60)
 @token_required
 def approve_application(id):
     """Approve a dealer application (admin only)"""
@@ -290,7 +294,7 @@ def approve_application(id):
         
         return jsonify({'success': True, 'message': 'Application approved successfully'})
     except Exception as e:
-        print(f'Error approving application: {e}')
+        print('[dealers] Operation failed')
         try:
             db.rollback()
         except:
@@ -298,6 +302,7 @@ def approve_application(id):
         return jsonify({'success': False, 'error': 'Failed to approve application'}), 500
 
 @bp.route('/applications/<int:id>/reject', methods=['PUT'])
+@rate_limit(max_requests=20, window_seconds=60)
 @token_required
 def reject_application(id):
     """Reject a dealer application (admin only)"""
@@ -357,7 +362,7 @@ def reject_application(id):
         
         return jsonify({'success': True, 'message': 'Application rejected'})
     except Exception as e:
-        print(f'Error rejecting application: {e}')
+        print('[dealers] Operation failed')
         try:
             db.rollback()
         except:

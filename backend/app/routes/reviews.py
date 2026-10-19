@@ -48,7 +48,7 @@ def get_car_reviews(car_id):
             ''')
         db.commit()
     except Exception as e:
-        print(f"Reviews table creation note: {e}")
+        print('[reviews] Operation failed')
         try:
             db.rollback()
         except:
@@ -56,7 +56,7 @@ def get_car_reviews(car_id):
     
     try:
         # Get reviews with user info - use LEFT JOIN to handle missing users gracefully
-        print(f"[Reviews] Fetching reviews for car_id: {car_id}")
+        # Do not log request content or personal data.
         if is_postgres():
             cursor = db.execute('''
                 SELECT r.id, r.car_id, r.user_id, r.rating, r.comment, r.created_at, r.updated_at,
@@ -88,7 +88,7 @@ def get_car_reviews(car_id):
                 'created_at': str(row['created_at']) if row['created_at'] else None,
                 'updated_at': str(row['updated_at']) if row['updated_at'] else None
             }
-            print(f"[Reviews] Found review: {review_data}")
+            # Do not log request content or personal data.
             reviews.append(review_data)
         
         # Calculate average rating
@@ -112,10 +112,10 @@ def get_car_reviews(car_id):
                 'total_reviews': int(stats['count']) if stats['count'] else 0
             }
         }
-        print(f"[Reviews] Returning: {result}")
+        # Do not log request content or personal data.
         return jsonify(result)
     except Exception as e:
-        print(f"Get reviews error: {e}")
+        print('[reviews] Operation failed')
         try:
             db.rollback()
         except:
@@ -169,7 +169,7 @@ def add_review(car_id):
         db.commit()
     except Exception as idx_err:
         # Index might already exist or table structure differs
-        print(f"Reviews index note: {idx_err}")
+        print('[reviews] Operation failed')
         try:
             db.rollback()
         except:
@@ -239,10 +239,8 @@ def add_review(car_id):
                 'review_id': review_id
             }), 201
     except Exception as e:
-        import traceback
-        print(f"Add review error: {e}")
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': f'Failed to submit review: {str(e)[:100]}'}), 500
+        print('[reviews] Operation failed')
+        return jsonify({'success': False, 'error': 'Failed to submit review'}), 500
 
 
 @bp.route('/<int:review_id>', methods=['DELETE'])
@@ -282,7 +280,7 @@ def delete_review(review_id):
         
         return jsonify({'success': True, 'message': 'Review deleted'})
     except Exception as e:
-        print(f"Delete review error: {e}")
+        print('[reviews] Operation failed')
         try:
             db.rollback()
         except:

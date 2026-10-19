@@ -1,6 +1,8 @@
 from flask import Blueprint, request, jsonify, current_app
 from ..db import get_db, is_postgres
-from ..security import sanitize_string, sanitize_search_query, validate_text_field, validate_integer, validate_float, require_auth
+from ..listing_media import validate_listing_media, InvalidListingMedia
+from ..media_assets import bind_listing_assets
+from ..security import sanitize_string, sanitize_search_query, validate_text_field, validate_integer, validate_float, require_auth, rate_limit
 import json
 
 bp = Blueprint('cars', __name__, url_prefix='/api/cars')
@@ -49,6 +51,7 @@ def car_row_to_dict(row):
     return d
 
 @bp.route('', methods=['GET'])
+@rate_limit(max_requests=120, window_seconds=60)
 def get_cars():
     db = get_db()
     args = request.args
@@ -106,7 +109,7 @@ def get_cars():
         count_cursor = db.execute(f"SELECT COUNT(*) as total {base_query}", params)
         total = count_cursor.fetchone()['total']
     except Exception as e:
-        print(f"Count query error: {e}")
+        print('Count query failed')
         try:
             db.rollback()
         except:
@@ -128,7 +131,7 @@ def get_cars():
         cursor = db.execute(query, params)
         cars = [car_row_to_dict(row) for row in cursor.fetchall()]
     except Exception as e:
-        print(f"Cars query error: {e}")
+        print('Cars query failed')
         try:
             db.rollback()
         except:
@@ -151,7 +154,7 @@ def get_car(id):
             return jsonify({'success': True, 'car': car_row_to_dict(row)})
         return jsonify({'success': False, 'error': 'Car not found'}), 404
     except Exception as e:
-        print(f"Get car error: {e}")
+        print('Get car failed')
         try:
             db.rollback()
         except:
@@ -160,16 +163,23 @@ def get_car(id):
 
 @bp.route('', methods=['POST'])
 def create_car():
-    # Get authenticated user (optional - allows anonymous listings too)
     user = require_auth()
-    owner_id = user['id'] if user else None
+    if not user:
+        return jsonify({'success': False, 'error': 'Authentication required'}), 401
+    owner_id = user['id']
     
     if not request.is_json:
         return jsonify({'success': False, 'error': 'Content-Type must be application/json'}), 400
     
     data = request.get_json(silent=True)
-    if not data:
+    if not isinstance(data, dict) or not data:
         return jsonify({'success': False, 'error': 'Invalid JSON body'}), 400
+
+    try:
+        media = validate_listing_media(data)
+        media = bind_listing_assets(media, owner_id)
+    except InvalidListingMedia as error:
+        return jsonify({'success': False, 'error': str(error)}), 400
     
     # Validate and sanitize required fields
     make = sanitize_string(data.get('make', ''))
@@ -216,19 +226,14 @@ def create_car():
         specs = {}
     
     # Handle image fields
-    image_url = sanitize_string(data.get('image', ''))[:500]
-    video_url = sanitize_string(data.get('videoUrl', ''))[:500]
+    image_url = media.get('image', '')
+    video_url = media.get('videoUrl', '')
     
     # Handle gallery images as JSON array
-    gallery_images = data.get('galleryImages', [])
-    if not isinstance(gallery_images, list):
-        gallery_images = []
-    gallery_images = [sanitize_string(url)[:500] for url in gallery_images if isinstance(url, str)]
+    gallery_images = media.get('galleryImages', [])
     
     # Handle media gallery as JSON array
-    media_gallery = data.get('mediaGallery', [])
-    if not isinstance(media_gallery, list):
-        media_gallery = []
+    media_gallery = media.get('mediaGallery', [])
     
     # Handle new optional fields
     category = sanitize_string(data.get('category', 'car'))[:20]
@@ -262,14 +267,12 @@ def create_car():
         db.commit()
         return jsonify({'success': True, 'id': new_id}), 201
     except Exception as e:
-        import traceback
-        print(f"Create car error: {e}")
-        traceback.print_exc()
+        print('Create car failed')
         try:
             db.rollback()
         except:
             pass
-        return jsonify({'success': False, 'error': str(e)}), 500
+        return jsonify({'success': False, 'error': 'Failed to create listing'}), 500
 
 
 @bp.route('/<int:id>', methods=['PATCH', 'PUT'])
@@ -287,7 +290,7 @@ def update_car(id):
     try:
         car = db.execute(f"SELECT * FROM cars WHERE id = {ph}", (id,)).fetchone()
     except Exception as e:
-        print(f"Update car fetch error: {e}")
+        print('Update car fetch failed')
         try:
             db.rollback()
         except:
@@ -304,8 +307,14 @@ def update_car(id):
         return jsonify({'success': False, 'error': 'Content-Type must be application/json'}), 400
     
     data = request.get_json(silent=True)
-    if not data:
+    if not isinstance(data, dict) or not data:
         return jsonify({'success': False, 'error': 'Invalid JSON body'}), 400
+
+    try:
+        media = validate_listing_media(data, car)
+        media = bind_listing_assets(media, user['id'], car)
+    except InvalidListingMedia as error:
+        return jsonify({'success': False, 'error': str(error)}), 400
     
     # Build update query dynamically based on provided fields
     updates = []
@@ -357,27 +366,22 @@ def update_car(id):
         params.append(json.dumps(specs))
     
     if 'image' in data:
-        image_url = sanitize_string(data['image'])[:500]
+        image_url = media['image']
         updates.append(f"image_url = {ph}")
         params.append(image_url)
     
     if 'videoUrl' in data:
-        video_url = sanitize_string(data['videoUrl'])[:500]
+        video_url = media['videoUrl']
         updates.append(f"video_url = {ph}")
         params.append(video_url)
     
     if 'galleryImages' in data:
-        gallery_images = data['galleryImages']
-        if not isinstance(gallery_images, list):
-            gallery_images = []
-        gallery_images = [sanitize_string(url)[:500] for url in gallery_images if isinstance(url, str)]
+        gallery_images = media['galleryImages']
         updates.append(f"gallery_images = {ph}")
         params.append(json.dumps(gallery_images))
     
-    if 'mediaGallery' in data:
-        media_gallery = data['mediaGallery']
-        if not isinstance(media_gallery, list):
-            media_gallery = []
+    if 'mediaGallery' in media:
+        media_gallery = media['mediaGallery']
         updates.append(f"media_gallery = {ph}")
         params.append(json.dumps(media_gallery))
     
@@ -429,7 +433,7 @@ def update_car(id):
         updated_car = db.execute(f"SELECT * FROM cars WHERE id = {ph}", (id,)).fetchone()
         return jsonify({'success': True, 'car': car_row_to_dict(updated_car)})
     except Exception as e:
-        print(f"Update car error: {e}")
+        print('Update car failed')
         try:
             db.rollback()
         except:
@@ -452,7 +456,7 @@ def delete_car(id):
     try:
         car = db.execute(f"SELECT * FROM cars WHERE id = {ph}", (id,)).fetchone()
     except Exception as e:
-        print(f"Delete car fetch error: {e}")
+        print('Delete car fetch failed')
         try:
             db.rollback()
         except:
@@ -470,7 +474,7 @@ def delete_car(id):
         db.commit()
         return jsonify({'success': True, 'message': 'Listing deleted'})
     except Exception as e:
-        print(f"Delete car error: {e}")
+        print('Delete car failed')
         try:
             db.rollback()
         except:

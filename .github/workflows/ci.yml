@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop/startup-launch]
+    branches: [production, stg, dev]
   pull_request:
-    branches: [main]
+    branches: [production, stg]
 
 jobs:
   frontend:
@@ -30,6 +30,9 @@ jobs:
       - name: Type check
         run: npx tsc --noEmit
 
+      - name: Frontend regression tests
+        run: npm test
+
       - name: Build
         run: npm run build
         env:
@@ -48,10 +51,25 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
-          cache-dependency-path: backend/requirements.txt
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-test.txt
 
       - name: Install dependencies
-        run: pip install -r backend/requirements.txt
+        run: pip install -r backend/requirements.txt -r backend/requirements-test.txt
 
       - name: Check syntax (py_compile)
         run: python -m py_compile backend/run.py backend/app/__init__.py backend/app/db.py
+
+      - name: Install video validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Isolated backend regression tests
+        env:
+          REQUIRE_VIDEO_TOOLS: '1'
+        working-directory: backend
+        # Explicit modules avoid discovering/importing app and initializing a database
+        # before the journey fixture establishes its isolated environment.
+        run: python -m unittest test_public_journey test_rate_limits test_import_local_cars test_inspect_uploads test_inspect_upload_provider test_video_validation test_release_config -v

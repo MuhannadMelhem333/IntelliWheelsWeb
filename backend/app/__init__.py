@@ -1,10 +1,15 @@
 import os
-from flask import Flask
+from flask import Flask, jsonify
+from werkzeug.exceptions import HTTPException
 from flask_cors import CORS
 from flask_swagger_ui import get_swaggerui_blueprint
 from dotenv import load_dotenv
 from .db import init_app as init_db
 from .security import add_security_headers
+from .cookie_auth import install_cookie_auth
+from .frontend_origin import resolve_reset_origin
+from .rate_limits import build_rate_limiter
+from .trusted_proxy import configure_trusted_proxy
 
 # Load environment variables from .env file
 load_dotenv()
@@ -40,11 +45,35 @@ def create_app(test_config=None):
         SECRET_KEY=secret_key,
         DATABASE=db_path,
         UPLOAD_FOLDER=os.path.join(app.root_path, '..', 'uploads'),
-        MAX_CONTENT_LENGTH=500 * 1024 * 1024,  # 500MB max upload for 4K videos
+        MAX_CONTENT_LENGTH=101 * 1024 * 1024,  # 100MB video plus multipart overhead
+        IMAGE_UPLOAD_MAX_BYTES=15 * 1024 * 1024,
+        VIDEO_UPLOAD_MAX_BYTES=100 * 1024 * 1024,
+        VIDEO_UPLOAD_MAX_SECONDS=120,
+        FFPROBE_PATH=os.environ.get('FFPROBE_PATH', 'ffprobe'),
+        LOCAL_UPLOADS_ALLOWED=os.environ.get('FLASK_ENV', 'development') == 'development',
+        # Enable only after explicit migration and staging acceptance.
+        MEDIA_ASSET_LEDGER_ENABLED=False,
+        UPLOAD_QUOTAS_ENABLED=False,
+        SIGNED_UPLOADS_ENABLED=False,
+        SIGNED_UPLOAD_PRESETS_VERIFIED=False,
+        SIGNED_UPLOAD_IMAGE_PRESET='',
+        SIGNED_UPLOAD_VIDEO_PRESET='',
+        SIGNED_UPLOAD_ENVIRONMENT='development',
+        UPLOAD_USER_MAX_ASSETS=100,
+        UPLOAD_USER_MAX_BYTES=1024 * 1024 * 1024,
         # Security settings
         SESSION_COOKIE_SECURE=os.environ.get('FLASK_ENV') == 'production',
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE='Lax',
+        # Keep disabled until frontend and CSRF callers migrate together.
+        COOKIE_AUTH_ENABLED=False,
+        COOKIE_AUTH_ORIGINS=allowed_origins,
+        PASSWORD_RESET_ORIGIN=os.environ.get('PASSWORD_RESET_ORIGIN'),
+        RATE_LIMIT_REDIS_URL=os.environ.get('RATE_LIMIT_REDIS_URL'),
+        RATE_LIMIT_NAMESPACE=os.environ.get('RATE_LIMIT_NAMESPACE'),
+        TRUSTED_PROXY_CIDRS=os.environ.get('TRUSTED_PROXY_CIDRS', ''),
+        TRUSTED_PROXY_X_FOR=os.environ.get('TRUSTED_PROXY_X_FOR', '0'),
+        TRUSTED_PROXY_X_PROTO=os.environ.get('TRUSTED_PROXY_X_PROTO', '0'),
     )
 
     if test_config is None:
@@ -53,6 +82,23 @@ def create_app(test_config=None):
     else:
         # load the test config if passed in
         app.config.from_mapping(test_config)
+
+    app.extensions['rate_limiter'] = build_rate_limiter(app.config)
+    configure_trusted_proxy(app)
+
+    app.config['PASSWORD_RESET_ORIGIN'] = resolve_reset_origin(
+        app.config['PASSWORD_RESET_ORIGIN'], allowed_origins,
+        development=os.environ.get('FLASK_ENV', 'development') == 'development',
+    )
+
+    if app.config['COOKIE_AUTH_ENABLED']:
+        # Hosted staging must not inherit the old development cookie policy.
+        if os.environ.get('FLASK_ENV') != 'development':
+            if not is_valid_key:
+                raise ValueError('Cookie authentication requires a secure SECRET_KEY')
+            app.config['SESSION_COOKIE_SECURE'] = True
+        if not app.config['COOKIE_AUTH_ORIGINS'] or '*' in app.config['COOKIE_AUTH_ORIGINS']:
+            raise ValueError('Cookie authentication requires explicit trusted origins')
 
     # Ensure instance folder exists
     try:
@@ -69,19 +115,31 @@ def create_app(test_config=None):
     # Initialize CORS with proper origin restrictions
     CORS(app, 
          resources={r"/api/*": {
-             "origins": allowed_origins if os.environ.get('FLASK_ENV') == 'production' else "*",
+             "origins": app.config['COOKIE_AUTH_ORIGINS'] if app.config['COOKIE_AUTH_ENABLED'] else (allowed_origins if is_production else "*"),
              "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-             "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
-             "supports_credentials": False
+             "allow_headers": ["Content-Type", "Authorization", "X-Requested-With", "Accept", "X-CSRF-Token", "X-Session-Version"],
+             "supports_credentials": app.config['COOKIE_AUTH_ENABLED']
          }})
     
     # Add security headers to all responses
     app.after_request(add_security_headers)
+    install_cookie_auth(app)
+
+    @app.errorhandler(Exception)
+    def handle_unexpected_error(error):
+        # Preserve status codes and headers for intentional HTTP errors.
+        if isinstance(error, HTTPException):
+            return error
+        # Never attach exception messages/tracebacks, headers or request data.
+        app.logger.error('request.unexpected_error')
+        return jsonify({'success': False, 'error': 'Internal server error'}), 500
     
     init_db(app)
 
     # Register Blueprints
     from .routes import cars, ai, system, auth, dealers, favorites, listings, reviews, messages
+    from .signed_uploads import bp as signed_uploads_bp
+    app.register_blueprint(signed_uploads_bp)
     app.register_blueprint(cars.bp)
     app.register_blueprint(ai.bp)
     app.register_blueprint(system.bp)
