@@ -34,6 +34,28 @@ class PublicJourneyTest(unittest.TestCase):
         self.enterContext(patch('app.video_validation.probe_video', return_value={
             'format': {'duration': '1'}, 'streams': [{'codec_type': 'video', 'codec_name': 'h264', 'width': 16, 'height': 16}]}))
 
+    def test_postgres_certificate_failure_never_retries_with_weaker_tls(self):
+        from app import db
+        url = 'postgresql://fixture@db.example.test/app?sslmode=verify-full&sslrootcert=system'
+        for message in ('certificate verify failed', 'root certificate file missing'):
+            with self.subTest(message=message), patch.dict(os.environ, {'DATABASE_URL': url}):
+                with patch.object(db.psycopg2, 'connect', side_effect=RuntimeError(message)) as connect:
+                    with self.assertRaises(RuntimeError):
+                        db._create_postgres_connection()
+                    connect.assert_called_once_with(url, connect_timeout=10)
+
+    def test_configured_postgres_without_driver_fails_closed(self):
+        from app import db
+        with patch.dict(os.environ, {'DATABASE_URL': 'postgresql://fixture@db.example.test/app'}):
+            with patch.object(db, 'HAS_POSTGRES', False):
+                with self.assertRaisesRegex(RuntimeError, 'PostgreSQL driver'):
+                    db.is_postgres()
+
+    def test_unconfigured_postgres_preserves_local_sqlite(self):
+        from app import db
+        with patch.dict(os.environ, {'DATABASE_URL': ''}), patch.object(db, 'HAS_POSTGRES', False):
+            self.assertFalse(db.is_postgres())
+
     def register(self, username):
         response = self.client.post('/api/auth/signup', json={
             'username': username, 'email': f'{username}@example.test',

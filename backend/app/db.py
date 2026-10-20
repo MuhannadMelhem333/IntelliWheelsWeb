@@ -11,36 +11,16 @@ try:
     HAS_POSTGRES = True
 except ImportError:
     HAS_POSTGRES = False
-    # Warn if DATABASE_URL is set but psycopg2 is missing
-    if os.environ.get('DATABASE_URL'):
-        print("[DB WARNING] DATABASE_URL is set but psycopg2 is not installed! Falling back to SQLite.")
 
 # Global connection pool (shared across requests for huge performance gain)
 _connection_pool = None
 
 
-def _force_sslmode_require(database_url):
-    """Return DATABASE_URL with sslmode=require and no sslrootcert override."""
-    parsed = urlparse(database_url)
-    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query['sslmode'] = 'require'
-    query.pop('sslrootcert', None)
-    return urlunparse(parsed._replace(query=urlencode(query)))
-
-
 def _create_postgres_connection(connect_timeout=10):
     """Create a direct PostgreSQL connection using normalized DATABASE_URL."""
     database_url = _get_database_url()
-    try:
-        return psycopg2.connect(database_url, connect_timeout=connect_timeout)
-    except Exception as e:
-        error_text = str(e).lower()
-        # Fallback for managed environments where verify-full/verify-ca trust chain fails.
-        if 'certificate verify failed' in error_text or 'root certificate file' in error_text:
-            fallback_url = _force_sslmode_require(database_url)
-            print('[DB] SSL verification failed, retrying with sslmode=require')
-            return psycopg2.connect(fallback_url, connect_timeout=connect_timeout)
-        raise
+    # Certificate failures must not weaken the caller's TLS policy.
+    return psycopg2.connect(database_url, connect_timeout=connect_timeout)
 
 
 def _is_connection_alive(connection):
@@ -55,9 +35,11 @@ def _is_connection_alive(connection):
         return False
 
 def is_postgres():
-    """Check if we're using PostgreSQL based on DATABASE_URL AND driver availability."""
-    # FIX: Only return True if we actually have the psycopg2 driver installed!
-    return bool(os.environ.get('DATABASE_URL')) and HAS_POSTGRES
+    """Select the configured database without silently changing storage."""
+    configured = bool(os.environ.get('DATABASE_URL'))
+    if configured and not HAS_POSTGRES:
+        raise RuntimeError('PostgreSQL driver is required when DATABASE_URL is configured')
+    return configured
 
 class PostgresRowWrapper:
     """Wrapper to make psycopg2 rows behave like sqlite3.Row."""

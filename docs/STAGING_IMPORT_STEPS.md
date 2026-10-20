@@ -1,5 +1,25 @@
 # First staging import — September 24, 2026
 
+## October 20 — Neon schema verification
+
+Database connection hardening: `backend/app/db.py` no longer retries certificate failures with `sslmode=require`, and a configured DATABASE_URL without the PostgreSQL driver now fails closed rather than selecting SQLite. Three regression tests in `test_public_journey.py` cover both failures and continued SQLite support when no DATABASE_URL is set. The two defects were reproduced before the fix. This preserves explicitly configured TLS policy; it does not upgrade an existing `sslmode=require` URL to hostname verification. Configure and test verify-full with trusted roots for the new runtime before release. Old environments relying on the insecure certificate fallback must correct their trust configuration before adopting this commit.
+
+Follow-up: the two PostgreSQL CREATE statements from `backend/app/routes/messages.py:ensure_messages_tables` were also captured with a recording database and applied transactionally. All eleven core/messaging tables now exist. Messaging route behavior still requires integration testing.
+
+Publication blocker: an interactive `git push origin dev` stalled and was cancelled. A noninteractive retry failed because Git could not obtain a GitHub username/credential. Read-only remote verification still showed `dev` at `82de0bc`; checkpoint `8870e5e` has NOT been published. The local Git client needs authentication before push/hosted CI. No production branch was pushed.
+
+Database hosting is now Neon, not Render Postgres. The confirmed IntelliWheels organization is on the Free plan. Project `intelliwheels-staging` (`frosty-mud-52667701`), branch `staging` (`br-proud-field-b75mdsxj`), database `intelliwheels`, PostgreSQL 16, AWS North Virginia. No paid upgrade, production migration, or customer-data import was performed.
+
+The live project reports a 512 MiB logical-size limit despite the public pricing page advertising 1 GB. Compute is fixed at 0.25 CU. An explicit suspend-timeout request was rejected; creation succeeded with provider defaults, whose API value is 0. Do not claim idle suspension was verified or change billing to resolve this discrepancy.
+
+On October 20, the public schema was confirmed empty, then the 24 statements from `backend/app/db.py:_init_postgres_tables` were captured by executing only that function against a recording cursor (without importing Flask or loading environment files). All were checked to be CREATE TABLE IF NOT EXISTS or additive ALTER TABLE ADD COLUMN IF NOT EXISTS. The exact source-derived statements were applied in one Neon transaction, then reapplied successfully to check idempotence.
+
+Live SQL checks passed for identity values within JavaScript's safe range, JSONB reads, favorite ON CONFLICT idempotence, review uniqueness, and foreign-key rejection. Synthetic fixtures ran inside a PL/pgSQL exception subtransaction and were rolled back; sequences may have advanced. Verified nine core tables and zero users, cars, favorites, and reviews after the checks. These are database-level checks, NOT proof of Flask route or browser compatibility.
+
+Still required: secure runtime DATABASE_URL configuration, Flask-to-Neon integration tests, review of request-created tables (including messages), PostgreSQL versions of optional upload migrations before enabling their flags, certificate validation without downgrade, a restricted runtime role, hosted CI, backend service configuration, frontend wiring, data import with ownership decisions, and browser acceptance. Existing `migrate_media_assets.py` and numbered upload SQL migrations are SQLite-only and must not be applied to Neon unchanged. Existing local environment files and local database were not overwritten. No connection credential was retrieved or printed.
+
+Rollback: application configuration has not been switched to Neon, so no runtime rollback is needed. Keep the isolated schema for continued testing. Do not delete the project or drop tables once data exists without a separate backup and explicit authorization.
+
 ## October 19 checkpoint
 
 - Confirmed workspace: IntelliWheels (`tea-darr4l7avr4c73frn89g`). User authorized backing up and replacing the newly created service, not purchasing resources or deploying production.
