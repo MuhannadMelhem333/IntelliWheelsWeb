@@ -30,6 +30,7 @@ def _is_connection_alive(connection):
         cursor.execute('SELECT 1')
         cursor.fetchone()
         cursor.close()
+        connection.rollback()  # End the probe transaction before configuring the borrowed connection.
         return True
     except Exception:
         return False

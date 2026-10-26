@@ -51,6 +51,38 @@ class PublicJourneyTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, 'PostgreSQL driver'):
                     db.is_postgres()
 
+    def test_pooled_health_probe_leaves_connection_ready_for_transaction_settings(self):
+        from app import db
+        from unittest.mock import Mock
+
+        class Connection:
+            in_transaction = False
+
+            def cursor(self):
+                cursor = Mock()
+                cursor.execute.side_effect = lambda sql: setattr(self, 'in_transaction', True)
+                return cursor
+
+            def rollback(self):
+                self.in_transaction = False
+
+            @property
+            def autocommit(self):
+                return False
+
+            @autocommit.setter
+            def autocommit(self, value):
+                if self.in_transaction:
+                    raise RuntimeError('set_session cannot be used inside a transaction')
+
+        connection = Connection()
+        pool = Mock()
+        pool.getconn.return_value = connection
+        with patch.object(db, 'is_postgres', return_value=True), patch.object(db, '_get_pool', return_value=pool), \
+                patch.object(db, '_connection_pool', pool), self.app.app_context():
+            self.assertIs(db.get_db()._connection, connection)
+            self.assertFalse(connection.in_transaction)
+
     def test_unconfigured_postgres_preserves_local_sqlite(self):
         from app import db
         with patch.dict(os.environ, {'DATABASE_URL': ''}), patch.object(db, 'HAS_POSTGRES', False):
