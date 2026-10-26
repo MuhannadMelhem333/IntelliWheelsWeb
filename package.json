@@ -2,6 +2,7 @@
   "name": "intelliwheels-fullstack",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "npm@11.13.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -13,7 +14,7 @@
     "@sentry/nextjs": "^10.39.0",
     "@types/leaflet": "^1.9.21",
     "leaflet": "^1.9.4",
-    "next": "^16.0.7",
+    "next": "^16.4.3",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "react-leaflet": "^5.0.0"
@@ -30,5 +31,8 @@
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.13",
     "typescript": "^5"
+  },
+  "overrides": {
+    "eslint-plugin-react-hooks": "7.0.1"
   }
 }
