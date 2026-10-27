@@ -13,6 +13,7 @@ import logging
 import os
 import smtplib
 import ssl
+import requests
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta, timezone
@@ -32,7 +33,7 @@ bp = Blueprint('auth', __name__, url_prefix='/api/auth')
 
 # Email config
 SMTP_HOST = os.getenv('SMTP_HOST', '')
-SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+SMTP_PORT = os.getenv('SMTP_PORT', '587')
 SMTP_USER = os.getenv('SMTP_USER', '')
 SMTP_PASS = os.getenv('SMTP_PASS', '')
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', '')
@@ -43,6 +44,32 @@ GOOGLE_CLIENT_SECRET = os.getenv('GOOGLE_CLIENT_SECRET', '')
 
 def send_auth_email(to_email, subject, body):
     """Send an authentication email (password reset, etc.)."""
+    provider = os.getenv('AUTH_EMAIL_PROVIDER', 'smtp')
+    if provider == 'resend':
+        api_key = os.getenv('RESEND_API_KEY', '')
+        sender = os.getenv('AUTH_EMAIL_FROM', '')
+        if not api_key or not sender:
+            logger.warning('auth.email_not_configured')
+            return False
+        try:
+            # Fixed destination; never redirect credentials or retry an uncertain send.
+            with requests.post('https://api.resend.com/emails',
+                               headers={'Authorization': f'Bearer {api_key}'},
+                               json={'from': sender, 'to': [to_email], 'subject': subject, 'html': body},
+                               timeout=10, allow_redirects=False, verify=True) as response:
+                if response.status_code != 200:
+                    raise ValueError('Email not accepted')
+                result = response.json()
+                if not isinstance(result, dict) or not isinstance(result.get('id'), str) or not result['id']:
+                    raise ValueError('Invalid email response')
+            logger.info('auth.email_accepted')
+            return True
+        except Exception:
+            logger.error('auth.email_failed')
+            return False
+    if provider != 'smtp':
+        logger.warning('auth.email_provider_invalid')
+        return False
     if not SMTP_HOST or not SMTP_USER:
         logger.warning('auth.email_not_configured')
         return False
@@ -56,7 +83,7 @@ def send_auth_email(to_email, subject, body):
         
         # Bound socket waits and authenticate the SMTP peer before credentials
         # or reset links leave the process. Never retry over plaintext.
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10) as server:
+        with smtplib.SMTP(SMTP_HOST, int(SMTP_PORT), timeout=10) as server:
             server.starttls(context=ssl.create_default_context())
             server.login(SMTP_USER, SMTP_PASS)
             server.send_message(msg)

@@ -27,6 +27,20 @@ class ReleaseConfigTest(unittest.TestCase):
         for value in ('http://api.example.com', 'https://localhost', 'https://127.0.0.1', 'https://10.0.0.1', 'https://user:pass@api.example.com', 'https://api.example.com?secret=x'):
             self.assertFalse(public_https(value))
 
+    def test_resend_configuration_needs_key_and_sender_not_smtp(self):
+        env = self.fixture()
+        for key in ('SMTP_HOST', 'SMTP_USER', 'SMTP_PASS'):
+            env.pop(key)
+        env.update(AUTH_EMAIL_PROVIDER='resend', RESEND_API_KEY='private-resend-key',
+                   AUTH_EMAIL_FROM='IntelliWheels <reset@example.test>', SMTP_PORT='unused')
+        self.assertTrue(check(env)['configuration_passed'])
+        self.assertNotIn('private-resend-key', str(check(env)))
+        for key in ('RESEND_API_KEY', 'AUTH_EMAIL_FROM'):
+            missing = {**env, key: ''}
+            self.assertIn('backend.password_reset_email_missing', check(missing)['blockers'])
+        env['AUTH_EMAIL_PROVIDER'] = 'unknown'
+        self.assertIn('backend.email_provider_invalid', check(env)['blockers'])
+
     def test_alias_conflicts_and_component_separation(self):
         env = self.fixture(); env['NEXT_PUBLIC_API_BASE_URL'] = 'https://different.example.com'
         self.assertIn('frontend.conflicting_public_api_settings', check(env, 'frontend')['blockers'])

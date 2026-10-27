@@ -19,6 +19,7 @@ class PublicJourneyTest(unittest.TestCase):
             'DATABASE_URL': '', 'DATABASE_PATH': str(root / 'journey.db'),
             'FLASK_ENV': 'development', 'SECRET_KEY': 'isolated-test-secret-not-for-deployment',
             'GEMINI_API_KEY': '',
+            'AUTH_EMAIL_PROVIDER': 'smtp', 'RESEND_API_KEY': '', 'AUTH_EMAIL_FROM': '',
             'RATE_LIMIT_REDIS_URL': '', 'RATE_LIMIT_NAMESPACE': '',
             'TRUSTED_PROXY_CIDRS': '', 'TRUSTED_PROXY_X_FOR': '0', 'TRUSTED_PROXY_X_PROTO': '0',
         }))
@@ -775,7 +776,7 @@ class PublicJourneyTest(unittest.TestCase):
                 patch.object(auth, 'SMTP_PASS', 'fixture-password'), \
                 patch.object(auth.smtplib, 'SMTP') as smtp:
             self.assertTrue(auth.send_auth_email('recipient@example.test', 'subject', 'reset fixture'))
-            smtp.assert_called_once_with('smtp.example.test', auth.SMTP_PORT, timeout=10)
+            smtp.assert_called_once_with('smtp.example.test', int(auth.SMTP_PORT), timeout=10)
             server = smtp.return_value.__enter__.return_value
             context = server.starttls.call_args.kwargs['context']
             self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
@@ -812,6 +813,84 @@ class PublicJourneyTest(unittest.TestCase):
             self.assertEqual(known.get_json(), unknown.get_json())
             smtp.assert_called_once()
             self.assertEqual([record.getMessage() for record in captured.records], ['auth.email_failed'])
+
+    def test_resend_email_uses_fixed_https_endpoint_without_redirects(self):
+        from app.routes import auth
+        with patch.dict(os.environ, {'AUTH_EMAIL_PROVIDER': 'resend', 'RESEND_API_KEY': 'fixture-key',
+                                    'AUTH_EMAIL_FROM': 'IntelliWheels <reset@example.test>'}), \
+                patch('requests.post') as post, patch.object(auth.smtplib, 'SMTP') as smtp:
+            response = post.return_value.__enter__.return_value
+            response.status_code = 200
+            response.json.return_value = {'id': 'fixture-email-id'}
+            self.assertTrue(auth.send_auth_email('recipient@example.test', 'subject', '<p>reset fixture</p>'))
+            post.assert_called_once_with('https://api.resend.com/emails',
+                headers={'Authorization': 'Bearer fixture-key'},
+                json={'from': 'IntelliWheels <reset@example.test>', 'to': ['recipient@example.test'],
+                      'subject': 'subject', 'html': '<p>reset fixture</p>'},
+                timeout=10, allow_redirects=False, verify=True)
+            smtp.assert_not_called()
+
+    def test_resend_rejects_errors_redirects_and_malformed_success_without_fallback(self):
+        from app.routes import auth
+        for status, payload in [(302, {}), (401, {}), (429, {}), (500, {}),
+                                (200, {}), (200, []), (200, None), (200, {'id': ''}), (200, {'id': 1})]:
+            with self.subTest(status=status, payload=payload), \
+                    patch.dict(os.environ, {'AUTH_EMAIL_PROVIDER': 'resend', 'RESEND_API_KEY': 'fixture-key',
+                                            'AUTH_EMAIL_FROM': 'reset@example.test'}), \
+                    patch('requests.post') as post, patch.object(auth.smtplib, 'SMTP') as smtp:
+                response = post.return_value.__enter__.return_value
+                response.status_code = status
+                response.json.return_value = payload
+                if payload is None:
+                    response.json.side_effect = ValueError('private-response-body')
+                with self.assertLogs(auth.logger, level='ERROR') as logs:
+                    self.assertFalse(auth.send_auth_email('recipient@example.test', 'subject', 'private-reset-link'))
+                self.assertEqual([r.getMessage() for r in logs.records], ['auth.email_failed'])
+                post.assert_called_once()
+                smtp.assert_not_called()
+
+    def test_resend_transport_failures_preserve_generic_reset_response(self):
+        import requests
+        from app.routes import auth
+        self.register('https_timeout')
+        for index, failure in enumerate((requests.Timeout('private-detail'), requests.exceptions.SSLError('private-detail'),
+                                         ValueError('private-response-body'))):
+            with self.subTest(failure=type(failure).__name__), \
+                    patch.dict(os.environ, {'AUTH_EMAIL_PROVIDER': 'resend', 'RESEND_API_KEY': 'fixture-key',
+                                            'AUTH_EMAIL_FROM': 'reset@example.test'}), \
+                    patch('requests.post', side_effect=failure) as post, \
+                    patch.object(auth.smtplib, 'SMTP') as smtp:
+                with self.assertLogs(auth.logger, level='ERROR') as logs:
+                    known = self.client.post('/api/auth/forgot-password', json={'email': 'https_timeout@example.test'},
+                                             environ_overrides={'REMOTE_ADDR': f'192.0.2.{index + 1}'})
+                unknown = self.client.post('/api/auth/forgot-password', json={'email': 'absent@example.test'},
+                                           environ_overrides={'REMOTE_ADDR': f'192.0.2.{index + 1}'})
+                self.assertEqual(known.status_code, 200)
+                self.assertEqual(known.get_json(), unknown.get_json())
+                self.assertEqual([r.getMessage() for r in logs.records], ['auth.email_failed'])
+                post.assert_called_once()
+                smtp.assert_not_called()
+
+    def test_resend_missing_settings_and_unknown_provider_never_connect(self):
+        from app.routes import auth
+        for provider, key, sender in [('resend', '', 'reset@example.test'),
+                                      ('resend', 'fixture-key', ''), ('unknown', 'fixture-key', 'reset@example.test')]:
+            with self.subTest(provider=provider, key=bool(key), sender=bool(sender)), \
+                    patch.dict(os.environ, {'AUTH_EMAIL_PROVIDER': provider, 'RESEND_API_KEY': key,
+                                            'AUTH_EMAIL_FROM': sender}), \
+                    patch('requests.post') as post, patch.object(auth.smtplib, 'SMTP') as smtp:
+                with self.assertLogs(auth.logger, level='WARNING'):
+                    self.assertFalse(auth.send_auth_email('recipient@example.test', 'subject', 'reset fixture'))
+                post.assert_not_called()
+                smtp.assert_not_called()
+
+    def test_invalid_smtp_port_fails_without_connecting(self):
+        from app.routes import auth
+        with patch.object(auth, 'SMTP_HOST', 'smtp.example.test'), patch.object(auth, 'SMTP_USER', 'fixture'), \
+                patch.object(auth, 'SMTP_PORT', 'invalid'), patch.object(auth.smtplib, 'SMTP') as smtp:
+            with self.assertLogs(auth.logger, level='ERROR'):
+                self.assertFalse(auth.send_auth_email('recipient@example.test', 'subject', 'reset fixture'))
+            smtp.assert_not_called()
 
     def test_auth_email_missing_configuration_does_not_connect(self):
         from app.routes import auth

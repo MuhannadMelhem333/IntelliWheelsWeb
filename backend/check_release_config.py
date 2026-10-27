@@ -61,11 +61,17 @@ def check(env, component='all'):
         require(public_https(reset, origin=True), 'backend.reset_origin_invalid')
         require(all(env.get(key) for key in ('CLOUDINARY_CLOUD_NAME', 'CLOUDINARY_API_KEY', 'CLOUDINARY_API_SECRET')),
                 'backend.durable_image_storage_missing')
-        require(all(env.get(key) for key in ('SMTP_HOST', 'SMTP_USER', 'SMTP_PASS')), 'backend.password_reset_email_missing')
-        try:
-            require(1 <= int(env.get('SMTP_PORT', '587')) <= 65535, 'backend.smtp_port_invalid')
-        except ValueError:
-            failures.append('backend.smtp_port_invalid')
+        email_provider = env.get('AUTH_EMAIL_PROVIDER', 'smtp')
+        require(email_provider in ('smtp', 'resend'), 'backend.email_provider_invalid')
+        if email_provider == 'resend':
+            require(all(env.get(key) for key in ('RESEND_API_KEY', 'AUTH_EMAIL_FROM')),
+                    'backend.password_reset_email_missing')
+        elif email_provider == 'smtp':
+            require(all(env.get(key) for key in ('SMTP_HOST', 'SMTP_USER', 'SMTP_PASS')), 'backend.password_reset_email_missing')
+            try:
+                require(1 <= int(env.get('SMTP_PORT', '587')) <= 65535, 'backend.smtp_port_invalid')
+            except ValueError:
+                failures.append('backend.smtp_port_invalid')
         try:
             limiter = urlsplit(env.get('RATE_LIMIT_REDIS_URL', ''))
             require(limiter.scheme in ('redis', 'rediss') and bool(limiter.hostname) and bool(env.get('RATE_LIMIT_NAMESPACE')),
